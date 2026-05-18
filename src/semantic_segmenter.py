@@ -29,7 +29,7 @@ class SemanticSegmenter:
             image = cv2.imread(str(img_path))
             
             # Run inference with higher confidence threshold to avoid false positives
-            results = self.model(image, verbose=False, device='cpu', conf=0.7)
+            results = self.model(image, verbose=False, device='cpu', conf=0.6)
             result = results[0]
             
             h, w = image.shape[:2]
