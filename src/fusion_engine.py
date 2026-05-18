@@ -209,6 +209,8 @@ class FusionEngine:
         bounding_boxes = []
         unique_classes = np.unique(semantics_stacked)
         
+        all_extracted_boxes = []
+        
         for cls_id in unique_classes:
             class_mask = (semantics_stacked == cls_id)
             class_pts = pts_stacked[class_mask]
@@ -229,7 +231,6 @@ class FusionEngine:
             max_label = labels.max()
             class_name = self.class_names[cls_id] if cls_id in self.class_names else f"Class_{cls_id}"
             
-            class_boxes = []
             for i in range(max_label + 1):
                 cluster_mask = (labels == i)
                 cluster_pts = np.asarray(temp_pcd.points)[cluster_mask]
@@ -244,7 +245,7 @@ class FusionEngine:
                     if obb.volume() < 0.5 or obb.volume() > 50000.0:
                         continue
                         
-                    class_boxes.append({
+                    all_extracted_boxes.append({
                         "class_id": int(cls_id),
                         "class_name": class_name,
                         "center": obb.center.tolist(),
@@ -255,24 +256,34 @@ class FusionEngine:
                 except Exception:
                     pass
             
-            class_boxes.sort(key=lambda x: x["volume"], reverse=True)
-            kept_boxes = []
-            for box in class_boxes:
-                c1 = np.array(box["center"])
-                overlap = False
-                for kept in kept_boxes:
-                    c2 = np.array(kept["center"])
-                    dist = np.linalg.norm(c1 - c2)
-                    max_ext = max(max(box["extent"]), max(kept["extent"]))
-                    if dist < max_ext * 0.8:
+        # Cross-Class Spatial NMS
+        all_extracted_boxes.sort(key=lambda x: x["volume"], reverse=True)
+        kept_boxes = []
+        for box in all_extracted_boxes:
+            c1 = np.array(box["center"])
+            overlap = False
+            for kept in kept_boxes:
+                c2 = np.array(kept["center"])
+                dist = np.linalg.norm(c1 - c2)
+                max_ext = max(max(box["extent"]), max(kept["extent"]))
+                
+                # If they are different classes, we are aggressive to remove false positives (e.g. toilet inside couch)
+                if box["class_id"] != kept["class_id"]:
+                    if dist < max_ext * 0.7:
                         overlap = True
                         break
-                if not overlap:
-                    kept_boxes.append(box)
-                    
-            for box in kept_boxes:
-                del box["volume"]
-                bounding_boxes.append(box)
+                # If they are the same class, we only remove if they are almost duplicates
+                else:
+                    if dist < max_ext * 0.3:
+                        overlap = True
+                        break
+            
+            if not overlap:
+                kept_boxes.append(box)
+                
+        for box in kept_boxes:
+            del box["volume"]
+            bounding_boxes.append(box)
         
         bbox_path = self.workspace_dir / "bounding_boxes.json"
         with open(bbox_path, 'w') as f:
