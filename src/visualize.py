@@ -75,8 +75,7 @@ def visualize(workspace_dir="workspace"):
     for g in geometries:
         vis.add_geometry(g)
         
-    # Reset camera to fit geometries and render a few frames to populate the buffer
-    vis.reset_camera_to_default()
+    # Render a few frames to populate the buffer
     for _ in range(50):
         vis.poll_events()
         vis.update_renderer()
