@@ -10,17 +10,23 @@ import json
 
 def visualize(workspace_dir="workspace"):
     workspace = Path(workspace_dir)
+    mesh_path = workspace / "scene_mesh.ply"
     rgb_path = workspace / "scene_rgb.ply"
     bbox_path = workspace / "bounding_boxes.json"
     
-    if not rgb_path.exists():
-        print(f"Point cloud not found in {workspace}. Please run the pipeline first.")
-        return
-        
-    print("Loading RGB point cloud...")
-    pcd_rgb = o3d.io.read_point_cloud(str(rgb_path))
+    geometries = []
     
-    geometries = [pcd_rgb]
+    if mesh_path.exists():
+        print("Loading TSDF Triangle Mesh...")
+        scene_geom = o3d.io.read_triangle_mesh(str(mesh_path))
+        geometries.append(scene_geom)
+    elif rgb_path.exists():
+        print("Loading RGB point cloud...")
+        scene_geom = o3d.io.read_point_cloud(str(rgb_path))
+        geometries.append(scene_geom)
+    else:
+        print(f"Neither scene_mesh.ply nor scene_rgb.ply found in {workspace}. Please run the pipeline first.")
+        return
     
     if bbox_path.exists():
         print("Loading Semantic Bounding Boxes...")
@@ -58,7 +64,7 @@ def visualize(workspace_dir="workspace"):
     print("  - [Q]               : Close")
     
     # Add a coordinate frame for reference
-    bbox = pcd_rgb.get_axis_aligned_bounding_box()
+    bbox = scene_geom.get_axis_aligned_bounding_box()
     extent = bbox.get_extent()
     coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=max(extent)*0.1, origin=[0, 0, 0])
     geometries.append(coord_frame)

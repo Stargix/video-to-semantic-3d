@@ -7,12 +7,13 @@ This repository provides a complete, 100% Python pipeline to convert a casual in
 Our approach follows the cutting-edge trend seen in modern 3D vision research (such as ByteDance's **Depth-Anything-3 COLMAP integration** and other "feed-forward" 3D models). Rather than relying on slow Multi-View Stereo (MVS) or compiling fragile CUDA kernels for 3D Gaussian Splatting, we leverage Foundation Models alongside robust Structure-from-Motion (SfM):
 1. **Sparse Geometric Consistency**: We use `pycolmap` (SfM) to accurately recover camera poses and a metrically consistent sparse point cloud.
 2. **Dense Semantic & Depth Priors**: We use `DepthAnythingV2` for incredibly dense and high-quality relative depth estimation (solving COLMAP's failure on textureless indoor walls), and `YOLOv8-seg` for robust 2D instance segmentation.
-3. **Metric Alignment & Fusion**: We dynamically align the dense relative depth maps to the sparse COLMAP metric points. We then unproject these dense maps into a 3D point cloud, coloring each point with its RGB value and appending the semantic label from YOLO.
+3. **Metric Alignment & Fusion**: We dynamically align the dense relative depth maps to the sparse COLMAP metric points. We then unproject these dense maps into a 3D point cloud.
+4. **3D Object Detection (DBSCAN)**: Instead of generating messy point-wise semantic colors, we apply spatial density clustering (DBSCAN) to the semantic points to extract pure, robust **Oriented 3D Bounding Boxes (OBB)**.
 
 **Why this is State-of-the-Art for Usability:**
-- **Zero custom CUDA compilation**: Unlike 3DGS, it runs purely in Python.
+- **Zero custom CUDA compilation**: Unlike 3DGS or NeRFs, it runs purely in Python and avoids PyTorch/CUDA version mismatches.
 - **Geometrically Coherent**: The scale and shift of the deep depth maps are anchored to the physical metric scale provided by COLMAP.
-- **Robustness**: It handles glossy floors and blank walls much better than traditional MVS.
+- **Actionable Semantics**: Outputs clean 3D Object Bounding Boxes (JSON) rather than noisy, un-filtered point labels.
 
 ## How to Record Optimal Videos
 

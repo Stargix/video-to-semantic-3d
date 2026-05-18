@@ -65,21 +65,34 @@ def create_summary_graphic(workspace_dir="workspace"):
 
 def create_pointcloud_gif(workspace_dir="workspace"):
     workspace = Path(workspace_dir)
-    ply_path = workspace / "scene_rgb.ply"
+    mesh_path = workspace / "scene_mesh.ply"
+    rgb_path = workspace / "scene_rgb.ply"
     
-    if not ply_path.exists():
-        print("Point cloud not found. Skipping GIF generation.")
+    if mesh_path.exists():
+        pcd = o3d.io.read_triangle_mesh(str(mesh_path))
+    elif rgb_path.exists():
+        pcd = o3d.io.read_point_cloud(str(rgb_path))
+    else:
+        print("Point cloud / Mesh not found. Skipping GIF generation.")
         return
-        
-    pcd = o3d.io.read_point_cloud(str(ply_path))
     
     print("Generating 3D Point Cloud GIF (this will open a window briefly)...")
     
     vis = o3d.visualization.Visualizer()
-    vis.create_window(visible=False) # Try hidden window
+    success = vis.create_window(visible=False) # Try hidden window
+    if not success:
+        print("Warning: Could not create OpenGL window for GIF. Skipping GIF generation.")
+        vis.destroy_window()
+        return
+        
     vis.add_geometry(pcd)
     
     opt = vis.get_render_option()
+    if opt is None:
+        print("Warning: Could not get render options for GIF. Skipping GIF generation.")
+        vis.destroy_window()
+        return
+        
     opt.background_color = np.asarray([0, 0, 0])
     opt.point_size = 2.0
     
