@@ -164,9 +164,34 @@ class FusionEngine:
                 all_sem_pts.append(pts)
                 all_sem_ids.append(semantics)
                 
-        print("Extracting TSDF Mesh...")
+        print("Extracting and Cleaning TSDF Mesh...")
         mesh = volume.extract_triangle_mesh()
         mesh.compute_vertex_normals()
+        
+        # 1. Clean mesh: Remove only small floating noise clusters, keep all main components
+        try:
+            triangle_clusters, cluster_n_triangles, _ = mesh.cluster_connected_triangles()
+            triangle_clusters = np.asarray(triangle_clusters)
+            cluster_n_triangles = np.asarray(cluster_n_triangles)
+            if len(cluster_n_triangles) > 0:
+                # Remove clusters that are smaller than 5000 triangles (small floating noise)
+                triangles_to_remove = cluster_n_triangles[triangle_clusters] < 5000
+                mesh.remove_triangles_by_mask(triangles_to_remove)
+                mesh.remove_unreferenced_vertices()
+        except Exception as e:
+            print(f"Warning: Could not clean mesh components: {e}")
+
+        # 2. Coordinate System Alignment (OpenCV to OpenGL)
+        # COLMAP is Y-down, Z-forward. Open3D visualizer expects Y-up, Z-backward.
+        # We apply a 180-degree rotation around X-axis.
+        flip_mat = np.array([
+            [1,  0,  0, 0],
+            [0, -1,  0, 0],
+            [0,  0, -1, 0],
+            [0,  0,  0, 1]
+        ])
+        mesh.transform(flip_mat)
+        
         o3d.io.write_triangle_mesh(str(self.workspace_dir / "scene_mesh.ply"), mesh)
         
         print("Extracting Semantic 3D Bounding Boxes...")
@@ -176,6 +201,10 @@ class FusionEngine:
             
         pts_stacked = np.vstack(all_sem_pts)
         semantics_stacked = np.hstack(all_sem_ids)
+        
+        # Apply the same OpenCV -> OpenGL coordinate flip to semantic points
+        pts_stacked_homo = np.hstack((pts_stacked, np.ones((pts_stacked.shape[0], 1))))
+        pts_stacked = (flip_mat @ pts_stacked_homo.T).T[:, :3]
         
         bounding_boxes = []
         unique_classes = np.unique(semantics_stacked)
