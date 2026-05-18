@@ -184,33 +184,84 @@ class FusionEngine:
         pcd.points = o3d.utility.Vector3dVector(pts_stacked)
         pcd.colors = o3d.utility.Vector3dVector(colors_stacked)
         
-        # We can't directly save semantics as an array in a standard ply easily using o3d without custom headers,
-        # but we can map semantic IDs to a custom color palette and save that as well.
-        # Let's save a custom numpy structure, or encode it as normals for visualization.
-        # Actually, let's just create a dictionary of colors for semantic IDs.
-        np.random.seed(42)
-        semantic_colors = np.random.rand(100, 3) 
-        semantic_colors[0] = [0.8, 0.8, 0.8] # -1 + 1 = 0 (Background)
-        
-        sem_color_mapped = semantic_colors[semantics_stacked + 1]
-        
-        pcd_semantic = o3d.geometry.PointCloud()
-        pcd_semantic.points = o3d.utility.Vector3dVector(pts_stacked)
-        pcd_semantic.colors = o3d.utility.Vector3dVector(sem_color_mapped)
-        
-        print("Downsampling and cleaning point cloud...")
+        print("Downsampling and cleaning RGB point cloud...")
         # Voxel downsample
         pcd = pcd.voxel_down_sample(0.02)
-        # Apply same downsampling to semantic pcd (it will yield exact same points/order)
-        pcd_semantic = pcd_semantic.voxel_down_sample(0.02)
-        
         # Statistical outlier removal
         pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-        pcd_semantic = pcd_semantic.select_by_index(ind)
         
         o3d.io.write_point_cloud(str(self.workspace_dir / "scene_rgb.ply"), pcd)
-        o3d.io.write_point_cloud(str(self.workspace_dir / "scene_semantic.ply"), pcd_semantic)
-        print(f"Fusion complete. Saved to {self.workspace_dir}")
+        
+        print("Extracting Semantic 3D Bounding Boxes...")
+        import json
+        
+        bounding_boxes = []
+        unique_classes = np.unique(semantics_stacked)
+        
+        for cls_id in unique_classes:
+            if cls_id == -1: # Background
+                continue
+                
+            # Extract points for this class
+            class_mask = (semantics_stacked == cls_id)
+            class_pts = pts_stacked[class_mask]
+            
+            if len(class_pts) < 1000:
+                continue
+                
+            # Create a temporary point cloud for clustering
+            temp_pcd = o3d.geometry.PointCloud()
+            temp_pcd.points = o3d.utility.Vector3dVector(class_pts)
+            # Downsample to speed up clustering and remove sparsity noise (slightly less aggressive)
+            temp_pcd = temp_pcd.voxel_down_sample(0.1)
+            
+            if len(temp_pcd.points) < 100:
+                continue
+            
+            # DBSCAN clustering (denser core requirement)
+            labels = np.array(temp_pcd.cluster_dbscan(eps=1.2, min_points=30, print_progress=False))
+            
+            if len(labels) == 0:
+                continue
+                
+            max_label = labels.max()
+            class_name = self.class_names[cls_id] if cls_id in self.class_names else f"Class_{cls_id}"
+            
+            for i in range(max_label + 1):
+                cluster_mask = (labels == i)
+                cluster_pts = np.asarray(temp_pcd.points)[cluster_mask]
+                
+                if len(cluster_pts) < 80: # Filter small noisy clusters more aggressively
+                    continue
+                    
+                cluster_pcd = o3d.geometry.PointCloud()
+                cluster_pcd.points = o3d.utility.Vector3dVector(cluster_pts)
+                
+                try:
+                    # Calculate Oriented Bounding Box
+                    obb = cluster_pcd.get_oriented_bounding_box()
+                    
+                    # Filter based on volume to remove planar noise (e.g. wall projections) or massive errors
+                    if obb.volume() < 0.5 or obb.volume() > 50000.0:
+                        continue
+                        
+                    # Save to JSON
+                    bounding_boxes.append({
+                        "class_id": int(cls_id),
+                        "class_name": class_name,
+                        "center": obb.center.tolist(),
+                        "R": obb.R.tolist(),
+                        "extent": obb.extent.tolist()
+                    })
+                except Exception as e:
+                    pass
+        
+        # Save JSON
+        bbox_path = self.workspace_dir / "bounding_boxes.json"
+        with open(bbox_path, 'w') as f:
+            json.dump(bounding_boxes, f, indent=4)
+            
+        print(f"Fusion complete. Saved RGB cloud and {len(bounding_boxes)} bounding boxes to {self.workspace_dir}")
 
 if __name__ == "__main__":
     # fusion = FusionEngine()

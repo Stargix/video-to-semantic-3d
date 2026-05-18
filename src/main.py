@@ -53,7 +53,7 @@ def main():
     
     print("\n=== Pipeline Complete ===")
     print(f"Reconstructed point clouds and visuals saved to {workspace}")
-    print("Run `python src/visualize.py --workspace workspace` to view interactive 3D results.")
+    print(f"Run `python src/visualize.py --workspace {workspace}` to view interactive 3D results.")
 
 if __name__ == "__main__":
     main()

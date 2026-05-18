@@ -6,28 +6,49 @@ import open3d as o3d
 import argparse
 from pathlib import Path
 import numpy as np
+import json
 
 def visualize(workspace_dir="workspace"):
     workspace = Path(workspace_dir)
     rgb_path = workspace / "scene_rgb.ply"
-    semantic_path = workspace / "scene_semantic.ply"
+    bbox_path = workspace / "bounding_boxes.json"
     
-    if not rgb_path.exists() or not semantic_path.exists():
-        print(f"Point clouds not found in {workspace}. Please run the pipeline first.")
+    if not rgb_path.exists():
+        print(f"Point cloud not found in {workspace}. Please run the pipeline first.")
         return
         
-    print("Loading point clouds...")
+    print("Loading RGB point cloud...")
     pcd_rgb = o3d.io.read_point_cloud(str(rgb_path))
-    pcd_semantic = o3d.io.read_point_cloud(str(semantic_path))
     
-    # Calculate offset to place them side by side
-    bbox = pcd_rgb.get_axis_aligned_bounding_box()
-    extent = bbox.get_extent()
-    offset = extent[0] * 1.5 # Offset along X axis
+    geometries = [pcd_rgb]
     
-    # Shift the semantic cloud
-    pcd_semantic.translate([offset, 0, 0])
-    
+    if bbox_path.exists():
+        print("Loading Semantic Bounding Boxes...")
+        with open(bbox_path, 'r') as f:
+            bounding_boxes = json.load(f)
+            
+        np.random.seed(42)
+        # Create a consistent color mapping for up to 100 classes
+        colors = np.random.rand(100, 3)
+        
+        print("\nDetected Objects:")
+        for bbox_data in bounding_boxes:
+            cls_id = bbox_data["class_id"]
+            cls_name = bbox_data["class_name"]
+            center = bbox_data["center"]
+            R = np.array(bbox_data["R"])
+            extent = bbox_data["extent"]
+            
+            color = colors[cls_id % 100]
+            
+            obb = o3d.geometry.OrientedBoundingBox(center, R, extent)
+            obb.color = color
+            
+            geometries.append(obb)
+            print(f" - [{cls_name}] (Color: R={color[0]:.2f}, G={color[1]:.2f}, B={color[2]:.2f})")
+    else:
+        print("No bounding_boxes.json found. Showing only RGB cloud.")
+        
     print("\n=== Interactive Visualizer ===")
     print("Controls:")
     print("  - Left Click + Drag : Rotate")
@@ -35,13 +56,15 @@ def visualize(workspace_dir="workspace"):
     print("  - Scroll Wheel      : Zoom")
     print("  - [H]               : Reset View")
     print("  - [Q]               : Close")
-    print("\nShowing RGB (Left) and Semantic (Right) side-by-side.")
     
     # Add a coordinate frame for reference
-    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=extent[2]*0.2, origin=[0, 0, 0])
+    bbox = pcd_rgb.get_axis_aligned_bounding_box()
+    extent = bbox.get_extent()
+    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=max(extent)*0.1, origin=[0, 0, 0])
+    geometries.append(coord_frame)
     
-    o3d.visualization.draw_geometries([pcd_rgb, pcd_semantic, coord_frame], 
-                                      window_name="3D Reconstruction: RGB vs Semantic",
+    o3d.visualization.draw_geometries(geometries, 
+                                      window_name="3D Semantic Bounding Boxes",
                                       width=1280, height=720)
 
 if __name__ == "__main__":
