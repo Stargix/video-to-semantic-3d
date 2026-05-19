@@ -6,6 +6,7 @@ import pycolmap
 from pathlib import Path
 from tqdm import tqdm
 from scipy.optimize import least_squares
+import json
 
 class FusionEngine:
     def __init__(self, workspace_dir: str = "workspace"):
@@ -14,39 +15,34 @@ class FusionEngine:
         self.depth_dir = self.workspace_dir / "depths"
         self.masks_dir = self.workspace_dir / "semantics"
         self.sparse_dir = self.workspace_dir / "sparse"
-        self.output_path = self.workspace_dir / "semantic_scene.ply"
+        self.output_path = self.workspace_dir / "scene_mesh.ply"
         
-        # We will load the COCO class names to use for coloring or metadata
-        from ultralytics import YOLO
-        model = YOLO("yolov8n.pt") # Just to get names
-        self.class_names = model.names
+        # We will load the COCO class names to use for metadata
+        try:
+            from ultralytics import YOLO
+            model = YOLO("yolov8n.pt") 
+            self.class_names = model.names
+        except:
+            self.class_names = {i: f"Class_{i}" for i in range(100)}
         
     def _align_depth(self, rel_depth, points_3d, camera, image_name, points_2d, point3D_ids):
-        """
-        Aligns the relative depth to the sparse metric 3D points from COLMAP.
-        """
-        # Get ground truth metric depths for the sparse points
         metric_depths = []
         rel_depths_for_points = []
         
-        # Camera extrinsics (world to camera)
         pose = camera.cam_from_world()
         R = pose.rotation.matrix()
         t = pose.translation
         
         for i, p3D_id in enumerate(point3D_ids):
-            if p3D_id == -1: continue # Not a valid 3D point
+            if p3D_id == -1: continue 
             if p3D_id not in points_3d: continue
             
             p3D = points_3d[p3D_id].xyz
-            
-            # Project to camera space to get metric depth
             p_cam = R @ p3D + t
             z_metric = p_cam[2]
             
             if z_metric <= 0: continue
             
-            # Get corresponding 2D point (from COLMAP feature extraction)
             x, y = points_2d[i].xy
             x, y = int(round(x)), int(round(y))
             
@@ -54,79 +50,55 @@ class FusionEngine:
                 continue
                 
             z_rel = rel_depth[y, x]
-            
             metric_depths.append(z_metric)
             rel_depths_for_points.append(z_rel)
             
         if len(metric_depths) < 10:
-            return None # Not enough points for reliable alignment
+            return None
             
         metric_depths = np.array(metric_depths)
         rel_depths_for_points = np.array(rel_depths_for_points)
         
-        # We want to find s, t such that metric_depth = s * rel_depth + t
-        # Using least squares
         def residuals(vars, d_rel, d_metric):
             s, t = vars
             return (s * d_rel + t) - d_metric
             
-        # Initial guess
         s_guess = np.median(metric_depths) / (np.median(rel_depths_for_points) + 1e-6)
         res = least_squares(residuals, x0=[s_guess, 0.0], args=(rel_depths_for_points, metric_depths), loss='soft_l1')
         
         s, t = res.x
-        
-        # Apply alignment
         aligned_depth = s * rel_depth + t
         aligned_depth[aligned_depth < 0] = 0
         return aligned_depth
         
-    def _unproject(self, aligned_depth, image, mask, camera):
-        """
-        Unprojects a depth map into a 3D point cloud.
-        """
-        # Camera intrinsics
-        h, w = aligned_depth.shape
-        # pycolmap 4.0 API for camera parameters:
-        # camera.camera is a pycolmap.Camera object
-        # we can use camera.camera.focal_length, camera.camera.principal_point etc
-        # or we can use calibration matrix if provided.
-        # camera.camera.calibration_matrix()
-        
-        # params = camera.camera.params
-        
-        # Let's dynamically fetch them to avoid param index issues
-        # Actually camera.camera.params is a property containing focal length and principal points
+    def _unproject_semantics(self, aligned_depth, mask, camera):
+        valid_mask = (mask != -1) & (aligned_depth > 0) & (aligned_depth < 100)
+        if not np.any(valid_mask):
+            return np.array([]), np.array([])
+            
         K = camera.camera.calibration_matrix()
         fx, fy = K[0, 0], K[1, 1]
         cx, cy = K[0, 2], K[1, 2]
-            
-        u, v = np.meshgrid(np.arange(w), np.arange(h))
         
-        z = aligned_depth
-        x = (u - cx) * z / fx
-        y = (v - cy) * z / fy
+        ys, xs = np.where(valid_mask)
+        z = aligned_depth[valid_mask]
         
-        # Camera to World
-        pts_cam = np.stack((x, y, z), axis=-1).reshape(-1, 3)
+        x = (xs - cx) * z / fx
+        y = (ys - cy) * z / fy
+        
+        pts_cam = np.stack((x, y, z), axis=-1)
         
         pose = camera.cam_from_world()
         R = pose.rotation.matrix()
         t = pose.translation
         
-        # R * p_w + t = p_c  => p_w = R^T * (p_c - t)
         pts_world = (pts_cam - t) @ R
+        semantics = mask[valid_mask]
         
-        colors = image.reshape(-1, 3) / 255.0
-        semantics = mask.reshape(-1)
-        
-        # Filter invalid depths
-        valid = (z.reshape(-1) > 0) & (z.reshape(-1) < 100) # Filter very far points
-        
-        return pts_world[valid], colors[valid], semantics[valid]
+        return pts_world, semantics
         
     def run_fusion(self):
-        print("Starting 3D Fusion...")
+        print("Starting 3D Fusion (TSDF Volume Integration)...")
         
         if not self.sparse_dir.exists():
             raise FileNotFoundError("Sparse reconstruction not found. Run SfM first.")
@@ -134,11 +106,17 @@ class FusionEngine:
         reconstruction = pycolmap.Reconstruction(self.sparse_dir)
         points_3d = reconstruction.points3D
         
-        all_pts = []
-        all_colors = []
-        all_semantics = []
+        # Initialize TSDF Volume
+        volume = o3d.pipelines.integration.ScalableTSDFVolume(
+            voxel_length=0.08, # ~8cm voxels. Works well for indoor metric scale.
+            sdf_trunc=0.3,
+            color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8
+        )
         
-        print("Aligning depths and unprojecting...")
+        all_sem_pts = []
+        all_sem_ids = []
+        
+        print("Integrating TSDF and extracting semantics...")
         for image_id, camera in tqdm(reconstruction.images.items()):
             img_name = camera.name
             img_stem = Path(img_name).stem
@@ -155,74 +133,102 @@ class FusionEngine:
             rel_depth = np.load(depth_path)
             mask = np.load(mask_path)
             
-            # Get 2D points and 3D point IDs for this image
             points_2d = camera.points2D
             point3D_ids = [p.point3D_id for p in points_2d]
             
-            # Align
             aligned_depth = self._align_depth(rel_depth, points_3d, camera, img_name, points_2d, point3D_ids)
-            if aligned_depth is None:
-                continue
+            if aligned_depth is None: continue
+            
+            # 1. TSDF Integration
+            h, w = aligned_depth.shape
+            color_o3d = o3d.geometry.Image(image)
+            depth_o3d = o3d.geometry.Image(aligned_depth.astype(np.float32))
+            
+            rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+                color_o3d, depth_o3d, depth_scale=1.0, depth_trunc=100.0, convert_rgb_to_intensity=False
+            )
+            
+            K = camera.camera.calibration_matrix()
+            intrinsic = o3d.camera.PinholeCameraIntrinsic(w, h, K[0,0], K[1,1], K[0,2], K[1,2])
+            
+            pose = camera.cam_from_world()
+            extrinsic = np.eye(4)
+            extrinsic[:3, :3] = pose.rotation.matrix()
+            extrinsic[:3, 3] = pose.translation
+            
+            volume.integrate(rgbd, intrinsic, extrinsic)
+            
+            # 2. Semantic Extraction
+            pts, semantics = self._unproject_semantics(aligned_depth, mask, camera)
+            if len(pts) > 0:
+                all_sem_pts.append(pts)
+                all_sem_ids.append(semantics)
                 
-            # Unproject
-            pts, colors, semantics = self._unproject(aligned_depth, image, mask, camera)
-            
-            # Subsample to avoid blowing up memory (e.g. keep 10%)
-            subsample = np.random.choice(len(pts), size=int(len(pts)*0.05), replace=False)
-            
-            all_pts.append(pts[subsample])
-            all_colors.append(colors[subsample])
-            all_semantics.append(semantics[subsample])
-            
-        print("Fusing point clouds...")
-        pts_stacked = np.vstack(all_pts)
-        colors_stacked = np.vstack(all_colors)
-        semantics_stacked = np.hstack(all_semantics)
+        print("Extracting and Cleaning TSDF Mesh...")
+        mesh = volume.extract_triangle_mesh()
+        mesh.compute_vertex_normals()
         
-        # Create Open3D PointCloud
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(pts_stacked)
-        pcd.colors = o3d.utility.Vector3dVector(colors_stacked)
+        # 1. Clean mesh: Remove only small floating noise clusters, keep all main components
+        try:
+            triangle_clusters, cluster_n_triangles, _ = mesh.cluster_connected_triangles()
+            triangle_clusters = np.asarray(triangle_clusters)
+            cluster_n_triangles = np.asarray(cluster_n_triangles)
+            if len(cluster_n_triangles) > 0:
+                # Remove clusters that are smaller than 5000 triangles (small floating noise)
+                triangles_to_remove = cluster_n_triangles[triangle_clusters] < 5000
+                mesh.remove_triangles_by_mask(triangles_to_remove)
+                mesh.remove_unreferenced_vertices()
+        except Exception as e:
+            print(f"Warning: Could not clean mesh components: {e}")
+
+        # 2. Coordinate System Alignment (OpenCV to OpenGL)
+        # COLMAP is Y-down, Z-forward. Open3D visualizer expects Y-up, Z-backward.
+        # We apply a 180-degree rotation around X-axis.
+        flip_mat = np.array([
+            [1,  0,  0, 0],
+            [0, -1,  0, 0],
+            [0,  0, -1, 0],
+            [0,  0,  0, 1]
+        ])
+        mesh.transform(flip_mat)
         
-        print("Downsampling and cleaning RGB point cloud...")
-        # Voxel downsample
-        pcd = pcd.voxel_down_sample(0.02)
-        # Statistical outlier removal
-        pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-        
-        o3d.io.write_point_cloud(str(self.workspace_dir / "scene_rgb.ply"), pcd)
+        o3d.io.write_triangle_mesh(str(self.workspace_dir / "scene_mesh.ply"), mesh)
         
         print("Extracting Semantic 3D Bounding Boxes...")
-        import json
+        if not all_sem_pts:
+            print("No semantics found.")
+            return
+            
+        pts_stacked = np.vstack(all_sem_pts)
+        semantics_stacked = np.hstack(all_sem_ids)
+        
+        # Apply the same OpenCV -> OpenGL coordinate flip to semantic points
+        pts_stacked_homo = np.hstack((pts_stacked, np.ones((pts_stacked.shape[0], 1))))
+        pts_stacked = (flip_mat @ pts_stacked_homo.T).T[:, :3]
         
         bounding_boxes = []
         unique_classes = np.unique(semantics_stacked)
         
+        all_extracted_boxes = []
+        
         for cls_id in unique_classes:
-            if cls_id == -1: # Background
-                continue
-                
-            # Extract points for this class
             class_mask = (semantics_stacked == cls_id)
             class_pts = pts_stacked[class_mask]
             
             if len(class_pts) < 1000:
                 continue
                 
-            # Create a temporary point cloud for clustering
             temp_pcd = o3d.geometry.PointCloud()
             temp_pcd.points = o3d.utility.Vector3dVector(class_pts)
-            # Downsample to speed up clustering and remove sparsity noise (slightly less aggressive)
             temp_pcd = temp_pcd.voxel_down_sample(0.1)
             
+            # Remove statistical outliers to avoid inflated bounding boxes
+            temp_pcd, _ = temp_pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
             if len(temp_pcd.points) < 100:
                 continue
             
-            # DBSCAN clustering (denser core requirement)
-            labels = np.array(temp_pcd.cluster_dbscan(eps=1.2, min_points=30, print_progress=False))
-            
-            if len(labels) == 0:
-                continue
+            labels = np.array(temp_pcd.cluster_dbscan(eps=1.0, min_points=20, print_progress=False))
+            if len(labels) == 0: continue
                 
             max_label = labels.max()
             class_name = self.class_names[cls_id] if cls_id in self.class_names else f"Class_{cls_id}"
@@ -231,39 +237,86 @@ class FusionEngine:
                 cluster_mask = (labels == i)
                 cluster_pts = np.asarray(temp_pcd.points)[cluster_mask]
                 
-                if len(cluster_pts) < 80: # Filter small noisy clusters more aggressively
-                    continue
+                if len(cluster_pts) < 50: continue
                     
                 cluster_pcd = o3d.geometry.PointCloud()
                 cluster_pcd.points = o3d.utility.Vector3dVector(cluster_pts)
                 
                 try:
-                    # Calculate Oriented Bounding Box
-                    obb = cluster_pcd.get_oriented_bounding_box()
+                    # Use robust OBB to minimize outlier impact
+                    obb = cluster_pcd.get_minimal_oriented_bounding_box(robust=True)
                     
-                    # Filter based on volume to remove planar noise (e.g. wall projections) or massive errors
-                    if obb.volume() < 0.5 or obb.volume() > 50000.0:
+                    extents = obb.extent
+                    # Filter 1: degenerate/flat boxes (aspect ratio > 6 means pancake/sliver)
+                    if min(extents) < 1e-4 or max(extents) / (min(extents) + 1e-5) > 6:
                         continue
                         
-                    # Save to JSON
-                    bounding_boxes.append({
+                    all_extracted_boxes.append({
                         "class_id": int(cls_id),
                         "class_name": class_name,
                         "center": obb.center.tolist(),
                         "R": obb.R.tolist(),
-                        "extent": obb.extent.tolist()
+                        "extent": obb.extent.tolist(),
+                        "volume": obb.volume()
                     })
-                except Exception as e:
+                except Exception:
                     pass
+
+        # Filter 2: relative volume per class — drop boxes < 10% of the largest of same class
+        if all_extracted_boxes:
+            by_class = {}
+            for box in all_extracted_boxes:
+                by_class.setdefault(box["class_id"], []).append(box["volume"])
+            max_vol_by_class = {cid: max(vols) for cid, vols in by_class.items()}
+            all_extracted_boxes = [
+                b for b in all_extracted_boxes
+                if b["volume"] >= max_vol_by_class[b["class_id"]] * 0.10
+            ]
+            
+        # Spatial NMS: Remove duplicates and overlapping boxes
+        all_extracted_boxes.sort(key=lambda x: x["volume"], reverse=True)
+        kept_boxes = []
+        for box in all_extracted_boxes:
+            c1 = np.array(box["center"])
+            overlap = False
+            for kept in kept_boxes:
+                c2 = np.array(kept["center"])
+                
+                # 1. Check if smaller box is inside the larger box (with 20% margin)
+                local_c1 = np.array(kept["R"]).T @ (c1 - c2)
+                is_inside = np.all(np.abs(local_c1) <= (np.array(kept["extent"]) / 2.0) * 1.2)
+                
+                if is_inside:
+                    overlap = True
+                    break
+                    
+                # 2. Distance check
+                dist = np.linalg.norm(c1 - c2)
+                max_ext = max(max(box["extent"]), max(kept["extent"]))
+                
+                # If they are different classes, we are aggressive to remove false positives
+                if box["class_id"] != kept["class_id"]:
+                    if dist < max_ext * 0.7:
+                        overlap = True
+                        break
+                # If they are the same class, we remove them if they are parts of the same object
+                else:
+                    if dist < max_ext * 0.6: # Increased from 0.3 to 0.6
+                        overlap = True
+                        break
+            
+            if not overlap:
+                kept_boxes.append(box)
+                
+        for box in kept_boxes:
+            del box["volume"]
+            bounding_boxes.append(box)
         
-        # Save JSON
         bbox_path = self.workspace_dir / "bounding_boxes.json"
         with open(bbox_path, 'w') as f:
             json.dump(bounding_boxes, f, indent=4)
             
-        print(f"Fusion complete. Saved RGB cloud and {len(bounding_boxes)} bounding boxes to {self.workspace_dir}")
+        print(f"Fusion complete. Saved Mesh and {len(bounding_boxes)} bounding boxes to {self.workspace_dir}")
 
 if __name__ == "__main__":
-    # fusion = FusionEngine()
-    # fusion.run_fusion()
     pass

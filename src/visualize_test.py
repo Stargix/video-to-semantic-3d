@@ -123,7 +123,7 @@ def visualize(workspace_dir="workspace"):
     print("  - Scroll Wheel      : Zoom")
     print("  - [Q]               : Close")
     
-    vis.run()
+    #vis.run()
     vis.destroy_window()
 
 if __name__ == "__main__":

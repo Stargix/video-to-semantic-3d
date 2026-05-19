@@ -28,8 +28,8 @@ class SemanticSegmenter:
         for img_path in tqdm(image_paths):
             image = cv2.imread(str(img_path))
             
-            # Run inference
-            results = self.model(image, verbose=False, device='cpu')
+            # Run inference with higher confidence threshold to avoid false positives
+            results = self.model(image, verbose=False, device='cpu', conf=0.7)
             result = results[0]
             
             h, w = image.shape[:2]
