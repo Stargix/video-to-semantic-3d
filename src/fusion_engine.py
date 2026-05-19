@@ -246,10 +246,9 @@ class FusionEngine:
                     # Use robust OBB to minimize outlier impact
                     obb = cluster_pcd.get_minimal_oriented_bounding_box(robust=True)
                     
-                    # SfM scale is arbitrary, so absolute volume filters like < 0.5 fail.
-                    # We only filter out degenerate (flat/thin) boxes.
                     extents = obb.extent
-                    if min(extents) < 1e-4 or max(extents) / (min(extents) + 1e-5) > 100:
+                    # Filter 1: degenerate/flat boxes (aspect ratio > 6 means pancake/sliver)
+                    if min(extents) < 1e-4 or max(extents) / (min(extents) + 1e-5) > 6:
                         continue
                         
                     all_extracted_boxes.append({
@@ -262,6 +261,17 @@ class FusionEngine:
                     })
                 except Exception:
                     pass
+
+        # Filter 2: relative volume per class — drop boxes < 10% of the largest of same class
+        if all_extracted_boxes:
+            by_class = {}
+            for box in all_extracted_boxes:
+                by_class.setdefault(box["class_id"], []).append(box["volume"])
+            max_vol_by_class = {cid: max(vols) for cid, vols in by_class.items()}
+            all_extracted_boxes = [
+                b for b in all_extracted_boxes
+                if b["volume"] >= max_vol_by_class[b["class_id"]] * 0.10
+            ]
             
         # Spatial NMS: Remove duplicates and overlapping boxes
         all_extracted_boxes.sort(key=lambda x: x["volume"], reverse=True)
