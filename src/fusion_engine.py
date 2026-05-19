@@ -263,7 +263,7 @@ class FusionEngine:
                 except Exception:
                     pass
             
-        # Cross-Class Spatial NMS
+        # Spatial NMS: Remove duplicates and overlapping boxes
         all_extracted_boxes.sort(key=lambda x: x["volume"], reverse=True)
         kept_boxes = []
         for box in all_extracted_boxes:
@@ -271,17 +271,27 @@ class FusionEngine:
             overlap = False
             for kept in kept_boxes:
                 c2 = np.array(kept["center"])
+                
+                # 1. Check if smaller box is inside the larger box (with 20% margin)
+                local_c1 = np.array(kept["R"]).T @ (c1 - c2)
+                is_inside = np.all(np.abs(local_c1) <= (np.array(kept["extent"]) / 2.0) * 1.2)
+                
+                if is_inside:
+                    overlap = True
+                    break
+                    
+                # 2. Distance check
                 dist = np.linalg.norm(c1 - c2)
                 max_ext = max(max(box["extent"]), max(kept["extent"]))
                 
-                # If they are different classes, we are aggressive to remove false positives (e.g. toilet inside couch)
+                # If they are different classes, we are aggressive to remove false positives
                 if box["class_id"] != kept["class_id"]:
                     if dist < max_ext * 0.7:
                         overlap = True
                         break
-                # If they are the same class, we only remove if they are almost duplicates
+                # If they are the same class, we remove them if they are parts of the same object
                 else:
-                    if dist < max_ext * 0.3:
+                    if dist < max_ext * 0.6: # Increased from 0.3 to 0.6
                         overlap = True
                         break
             
