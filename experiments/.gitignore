@@ -1,0 +1,20 @@
+# Ignore raw downloads and extracted datasets
+dataset/
+*.tgz
+*.tar.gz
+
+# Ignore local compiled/downloaded videos (keep repo light)
+videos/*.mp4
+videos/*.mov
+
+# Ignore any local intermediate workspaces or temp files
+temp_workspaces/
+outputs/
+*.log
+database.db
+scene_mesh.ply
+depths/
+semantics/
+images/
+sparse/
+__pycache__/

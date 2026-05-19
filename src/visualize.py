@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import json
 
-def visualize(workspace_dir="workspace"):
+def visualize(workspace_dir="workspace", screenshot_only=False):
     workspace = Path(workspace_dir)
     mesh_path = workspace / "scene_mesh.ply"
     rgb_path = workspace / "scene_rgb.ply"
@@ -117,17 +117,21 @@ def visualize(workspace_dir="workspace"):
     cv2.imwrite(str(out_path), img)
     print(f"Saved automatic labeled screenshot to {out_path}")
     
-    print("\n=== Interactive Controls ===")
-    print("  - Left Click + Drag : Rotate")
-    print("  - Right Click + Drag: Translate")
-    print("  - Scroll Wheel      : Zoom")
-    print("  - [Q]               : Close")
-    
-    vis.run()
+    if not screenshot_only:
+        print("\n=== Interactive Controls ===")
+        print("  - Left Click + Drag : Rotate")
+        print("  - Right Click + Drag: Translate")
+        print("  - Scroll Wheel      : Zoom")
+        print("  - [Q]               : Close")
+        vis.run()
+    else:
+        print("[OK] Screenshot captured automatically. Closing visualizer.")
+        
     vis.destroy_window()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", type=str, default="workspace", help="Path to workspace directory")
+    parser.add_argument("--screenshot-only", action="store_true", help="Generate and save screenshot then exit immediately without interaction")
     args = parser.parse_args()
-    visualize(args.workspace)
+    visualize(args.workspace, args.screenshot_only)
