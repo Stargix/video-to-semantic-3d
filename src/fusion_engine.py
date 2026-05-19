@@ -222,10 +222,12 @@ class FusionEngine:
             temp_pcd.points = o3d.utility.Vector3dVector(class_pts)
             temp_pcd = temp_pcd.voxel_down_sample(0.1)
             
+            # Remove statistical outliers to avoid inflated bounding boxes
+            temp_pcd, _ = temp_pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
             if len(temp_pcd.points) < 100:
                 continue
             
-            labels = np.array(temp_pcd.cluster_dbscan(eps=1.2, min_points=30, print_progress=False))
+            labels = np.array(temp_pcd.cluster_dbscan(eps=1.0, min_points=20, print_progress=False))
             if len(labels) == 0: continue
                 
             max_label = labels.max()
@@ -235,14 +237,19 @@ class FusionEngine:
                 cluster_mask = (labels == i)
                 cluster_pts = np.asarray(temp_pcd.points)[cluster_mask]
                 
-                if len(cluster_pts) < 80: continue
+                if len(cluster_pts) < 50: continue
                     
                 cluster_pcd = o3d.geometry.PointCloud()
                 cluster_pcd.points = o3d.utility.Vector3dVector(cluster_pts)
                 
                 try:
-                    obb = cluster_pcd.get_oriented_bounding_box()
-                    if obb.volume() < 0.5 or obb.volume() > 50000.0:
+                    # Use robust OBB to minimize outlier impact
+                    obb = cluster_pcd.get_minimal_oriented_bounding_box(robust=True)
+                    
+                    # SfM scale is arbitrary, so absolute volume filters like < 0.5 fail.
+                    # We only filter out degenerate (flat/thin) boxes.
+                    extents = obb.extent
+                    if min(extents) < 1e-4 or max(extents) / (min(extents) + 1e-5) > 100:
                         continue
                         
                     all_extracted_boxes.append({
