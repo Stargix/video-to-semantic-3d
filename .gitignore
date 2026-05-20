@@ -44,7 +44,6 @@ workspace*/
 *.png
 *.gif
 *.db
-fusion.log
 demo*.mp4
 
 # Models
