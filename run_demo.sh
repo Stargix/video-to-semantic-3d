@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-echo "Activating conda environment..."
-source /home/stargix/miniconda3/etc/profile.d/conda.sh
-conda activate vid3d
 
 echo "Running Video to Semantic 3D Pipeline on inputs/demo3.mp4..."
 OUTPUT_DIR="outputs/demo_output_$(date +%Y%m%d_%H%M%S)"
