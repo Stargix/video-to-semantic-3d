@@ -61,7 +61,7 @@ While direct 3D object detection models (such as VoteNet or Im3D) exist, they ar
 
 ---
 
-## Dining Room (Comedor) Demonstration Results
+## Dining Room Demonstration Results
 
 The default demonstration evaluates the pipeline on a casual handheld video of a dining room (`inputs/demo3.mp4`). The system successfully maps the physical layout of the room, reconstructing structural surfaces and extracting oriented bounding boxes for the dining chairs and surrounding furniture.
 
