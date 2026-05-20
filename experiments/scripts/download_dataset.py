@@ -8,16 +8,12 @@ REPO_TYPE = "dataset"
 
 SCENES = [
     "scene0019_00.mp4",
-    "scene0077_00.mp4",
-    "scene0081_00.mp4",
-    "scene0083_00.mp4",
-    "scene0083_01.mp4",
-    "scene0088_03.mp4",
     "scene0090_00.mp4",
     "scene0104_00.mp4",
     "scene0112_02.mp4",
     "scene0117_00.mp4",
 ]
+
 
 def main():
     script_dir = Path(__file__).resolve().parent
