@@ -5,14 +5,24 @@ from ultralytics import YOLO
 from tqdm import tqdm
 
 class SemanticSegmenter:
-    def __init__(self, workspace_dir: str = "workspace", model_name: str = "yolov8m-seg.pt"):
+    def __init__(self, workspace_dir: str = "workspace", model_name: str = "models/yolov8m-seg.pt"):
         self.workspace_dir = Path(workspace_dir)
         self.images_dir = self.workspace_dir / "images"
         self.masks_dir = self.workspace_dir / "semantics"
         
+        # Check if the model exists under the specified path, else look inside models/
+        import os
+        resolved_path = model_name
+        if not os.path.exists(resolved_path):
+            potential_path = os.path.join("models", model_name)
+            if os.path.exists(potential_path):
+                resolved_path = potential_path
+            elif model_name == "yolov8m-seg.pt" and os.path.exists("models/yolov8m-seg.pt"):
+                resolved_path = "models/yolov8m-seg.pt"
+        
         # Initialize YOLO segmentation model
-        print(f"Loading Semantic Segmentation Model: {model_name}...")
-        self.model = YOLO(model_name)
+        print(f"Loading Semantic Segmentation Model: {resolved_path}...")
+        self.model = YOLO(resolved_path)
         
     def extract_semantics(self):
         """

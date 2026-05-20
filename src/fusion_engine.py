@@ -20,7 +20,9 @@ class FusionEngine:
         # We will load the COCO class names to use for metadata
         try:
             from ultralytics import YOLO
-            model = YOLO("yolov8n.pt") 
+            import os
+            model_path = "models/yolov8n.pt" if os.path.exists("models/yolov8n.pt") else "yolov8n.pt"
+            model = YOLO(model_path) 
             self.class_names = model.names
         except:
             self.class_names = {i: f"Class_{i}" for i in range(100)}
